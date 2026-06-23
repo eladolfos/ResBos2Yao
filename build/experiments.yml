@@ -1,0 +1,11 @@
+Experiments:
+    #             id,    name,      type, beam,  ecm,  yPz,  yk,   fit,   calc 
+    - experiment: [ 4,    CDF1,  collider,  ppb, 1800,  0.0, true, false, false]
+    - experiment: [ 5,    CDF2,  collider,  ppb, 1960,  0.0, true, false, false]
+    - experiment: [10,     D01,  collider,  ppb, 1800,  0.0, true, false, false]
+    - experiment: [11,     D02,  collider,  ppb, 1960,  0.0, true, false, false]
+    - experiment: [12, E288200,    fixed1,  pCu, 19.4,  0.4, true, false, false]
+    - experiment: [13, E288300,    fixed1,  pCu, 23.8, 0.21, true, false, false]
+    - experiment: [14, E288400,    fixed1,  pCu, 27.4, 0.03, true,  true, true]
+    - experiment: [16,    E605,    fixed1,  pCu, 38.8,  0.1, true, false, false] 
+    - experiment: [17,    R209,    fixed2,   pp, 62.0,  0.0, true, false, false]

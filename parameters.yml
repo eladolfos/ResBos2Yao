@@ -1,0 +1,14 @@
+Parameters:
+    #               name,  value,  min, max,      prior, prior_params,        latex,  fit
+    - parameter: [     g1,   0.21,  0.0, 1.0,   constant,           [],          g_1, false] 
+    - parameter: [     g2,   0.68,  0.0, 1.0,   constant,           [],          g_2, false]
+    - parameter: [     g3, -0.126, -1.0, 1.0,   constant,           [],          g_3, false]
+    - parameter: [   CDF1,   1.00,  0.0, 2.0,   gaussian,  [1.0, 0.04],    CDF1 Norm, false] 
+    - parameter: [   CDF2,   1.00,  0.0, 2.0,   gaussian,  [1.0, 0.04],    CDF2 Norm, false] 
+    - parameter: [    D01,   1.00,  0.0, 2.0,   gaussian,  [1.0, 0.04],     D01 Norm, false] 
+    - parameter: [    D02,   1.00,  0.0, 2.0,   gaussian,  [1.0, 0.04],     D02 Norm, false] 
+    - parameter: [E288200,   1.00,  0.0, 2.0,   gaussian,  [1.0, 0.25], E288200 Norm, false] 
+    - parameter: [E288300,   1.00,  0.0, 2.0,   gaussian,  [1.0, 0.25], E288300 Norm, false] 
+    - parameter: [E288400,   1.00,  0.0, 2.0,   gaussian,  [1.0, 0.25], E288400 Norm, false] 
+    - parameter: [   E605,   1.00,  0.0, 2.0,   gaussian,  [1.0, 0.15],    E605 Norm, false] 
+    - parameter: [   R209,   1.00,  0.0, 2.0,   gaussian,  [1.0, 0.10],    R209 Norm, true] 

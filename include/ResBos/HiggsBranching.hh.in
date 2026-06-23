@@ -1,0 +1,100 @@
+#ifndef HIGGS_BRANCHING_HH
+#define HIGGS_BRANCHING_HH
+
+#include <regex>
+
+#include "ResBos/Grid1D.hh"
+#include "ResBos/Process/Higgs.hh"
+
+using namespace ResBos;
+
+std::vector<std::string> tokenize(const std::string& input, const std::string& regex) {
+    std::regex re(regex);
+    std::sregex_token_iterator rit(input.begin(), input.end(), re, -1);
+    std::vector<std::string> tokens;
+    std::remove_copy_if(rit, std::sregex_token_iterator(),
+            std::back_inserter(tokens),
+            [](std::string const &s) {return s.empty(); });
+    return tokens;
+}
+
+// NOTE: HDECAY OUTPUT IS AS FOLLOWS
+// br.sm1
+// M_H      BB     TAU TAU     MU MU       SS     CC      TT
+// br.sm2
+// M_H      GG     GAM GAM     Z GAM       WW     ZZ      WIDTH
+
+std::map<HiggsDecay,Utility::Grid1D> MakeGrid() {
+    std::string file1 = "@RESBOS_SOURCE_DIR@/data/br.sm1";
+    std::string file2 = "@RESBOS_SOURCE_DIR@/data/br.sm2";
+
+    std::vector<double> mh, brBB, brTauTau, brMuMu, brSS, brCC, brTT;
+    std::vector<double> brGG, brAA, brZA, brWW, brZZ, width;
+
+    std::ifstream br1(file1), br2(file2);
+
+    // Ensure the user didn't remove the file
+    if(!br1.is_open()) 
+        throw std::runtime_error("HiggsBranching: Could not load file \"/data/br.sm1\", Make sure it still exists");
+
+    // Skip over the header since it is not needed
+    std::string line;
+    for(size_t i = 0; i < 3; ++i) std::getline(br1, line);
+
+    // Read lines in
+    while(std::getline(br1,line)) {
+        std::vector<std::string> tokens = tokenize(line,"\\s+");
+        mh.push_back(std::stod(tokens[0]));
+        brBB.push_back(std::stod(tokens[1]));
+        brTauTau.push_back(std::stod(tokens[2]));
+        brMuMu.push_back(std::stod(tokens[3]));
+        brSS.push_back(std::stod(tokens[4]));
+        brCC.push_back(std::stod(tokens[5]));
+        brTT.push_back(std::stod(tokens[6]));
+    }
+
+    // Close file
+    br1.close();
+
+    // Ensure the user didn't remove the file
+    if(!br2.is_open()) 
+        throw std::runtime_error("HiggsBranching: Could not load file \"/data/br.sm2\", Make sure it still exists");
+
+    // Skip over the header since it is not needed
+    for(size_t i = 0; i < 3; ++i) std::getline(br2, line);
+
+    // Read lines in
+    size_t mh_count = 0;
+    while(std::getline(br2,line)) {
+        std::vector<std::string> tokens = tokenize(line,"\\s+");
+        if(std::stod(tokens[0]) != mh[mh_count++]) throw std::runtime_error("HiggsBranching: br.sm1 and br.sm2 are not over the same mass range");
+        brGG.push_back(std::stod(tokens[1]));
+        brAA.push_back(std::stod(tokens[2]));
+        brZA.push_back(std::stod(tokens[3]));
+        brWW.push_back(std::stod(tokens[4]));
+        brZZ.push_back(std::stod(tokens[5]));
+        width.push_back(std::stod(tokens[6]));
+    }
+
+    // Close file
+    br2.close();
+
+    // Construct Grid1D objects
+    std::map<HiggsDecay,Utility::Grid1D> result;
+    result[HiggsDecay::BB] = Utility::Grid1D(mh,brBB);
+    result[HiggsDecay::TauTau] = Utility::Grid1D(mh,brTauTau);
+    result[HiggsDecay::MuMu] = Utility::Grid1D(mh,brMuMu);
+    result[HiggsDecay::SS] = Utility::Grid1D(mh,brSS);
+    result[HiggsDecay::CC] = Utility::Grid1D(mh,brCC);
+    result[HiggsDecay::TT] = Utility::Grid1D(mh,brTT);
+    result[HiggsDecay::GG] = Utility::Grid1D(mh,brGG);
+    result[HiggsDecay::AA] = Utility::Grid1D(mh,brAA);
+    result[HiggsDecay::ZA] = Utility::Grid1D(mh,brZA);
+    result[HiggsDecay::WW] = Utility::Grid1D(mh,brWW);
+    result[HiggsDecay::ZZ] = Utility::Grid1D(mh,brZZ);
+    result[HiggsDecay::Width] = Utility::Grid1D(mh,width);
+
+    return result;
+}
+
+#endif

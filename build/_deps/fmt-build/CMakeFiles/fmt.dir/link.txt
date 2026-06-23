@@ -1,0 +1,1 @@
+/opt/software-current/2023.06/x86_64/intel/skylake_avx512/software/GCCcore/13.2.0/bin/c++ -fPIC -O3 -DNDEBUG -shared -Wl,-soname,libfmt.so.6 -o libfmt.so.6.2.1 CMakeFiles/fmt.dir/src/format.cc.o CMakeFiles/fmt.dir/src/os.cc.o   -L/mnt/ffs24/home/fuyao3/ROOT_6_30_02/lib  -Wl,-rpath,/mnt/ffs24/home/fuyao3/ROOT_6_30_02/lib: -Wl,--as-needed 

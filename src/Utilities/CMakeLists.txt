@@ -1,0 +1,40 @@
+add_library(ResbosUtilities)
+target_sources(ResbosUtilities
+    PRIVATE
+    AdaptiveIntegrator.cc
+    AdaptiveMap.cc
+    Adzint.cc
+    BaseIntegrator.cc
+    Brent.cc
+    ConfigParser.cc
+    Cuts.cc
+    DoubleExponential.cc
+    Electroweak.cc
+    Event.cc
+    FourVector.cc
+    GaussKronrod.cc
+    Grid1D.cc
+    Grid2D.cc
+    Grid3D.cc
+    Histogram.cc
+    LHEF3.cc
+    LHEFResBos.cc
+    loguru.cpp
+    Lorentz.cc
+    #    Log.cc
+    MPI.cc
+    NewtonCotes.cc
+    OgataQuad.cc
+    OscIntegrator.cc
+    Particle.cc
+    PhaseSpace.cc
+    ProgressBar.cc
+    Random.cc
+    Settings.cc
+    ThreadPool.cc
+    ThreeVector.cc
+    Utility.cc
+    Vegas.cc
+    )
+target_link_libraries(ResbosUtilities PRIVATE project_options project_warnings project_addons
+                                      PUBLIC  Threads::Threads fmt::fmt dl)

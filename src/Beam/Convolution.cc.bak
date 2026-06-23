@@ -1,0 +1,751 @@
+#include "ResBos/ResBos2.hh"
+#include "ResBos/Convolution.hh"
+#include "ResBos/Pdf.hh"
+#include "ResBos/Grid2D.hh"
+#include "ResBos/HoppetInterface.hh"
+#include "ResBos/ThreadPool.hh"
+#include "ResBos/Utility.hh"
+#include "ResBos/QCDConst.hh"
+#include "ResBos/Process.hh"
+#include "ResBos/ThreadPool.hh"
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fstream>
+
+// Store information about the ThreadPool and the mainThread id
+ThreadPool *pool;
+std::thread::id mainThread;
+
+namespace ResBos {
+    // Convolution class constructor
+    Convolution::Convolution(int COrder, Scheme scheme, double C1_, double C2_, double C3_) 
+        : order(COrder), scheme(scheme) {
+        // Initialize C values for scale dependence
+        C1 = C1_*QCD::B0;
+        C2 = C2_;
+        C3 = C3_*QCD::B0;
+
+        // Initialize the vectors for the grids in x and Q space
+        for(int i = 0; i < nX; i++) {
+            double A = 3.0;
+            double xMin = 1E-8;
+            double zMin = pow(xMin,1/A);
+            double dz = (1-zMin)/nX;
+            double z = zMin + i*dz;
+            xVec.push_back(pow(z,A));
+        }
+        for(int j = 0; j < nQ; j++) {
+            double dtt = 1.5/(double)nQ;
+            double qBase = 0.1;
+            double tt = 1.0+j*dtt;
+            qVec.push_back(qBase*exp(exp(tt)));
+        }
+    }
+
+    // Copy constructor
+    Convolution::Convolution(const Convolution& other) {
+        C1f = other.C1f;
+        C2f = other.C2f;
+        C1P1f = other.C1P1f;
+        C1P2f = other.C1P2f;
+        C1P1P1f = other.C1P1P1f;
+        C2P1f = other.C2P1f;
+        xVec = other.xVec;
+        qVec = other.qVec;
+        hoppet = new Utility::Hoppet(*other.hoppet);
+        pdfs = other.pdfs;
+        order = other.order;
+        scheme = other.scheme;
+    }
+
+    // Get the Convolution (conv) for a given pid, x and Q value
+    // Process is passed to calculate scheme dependence
+    double Convolution::GetConv(int pid, double x, double Q, Conv conv) {
+        double schemeDep = 0;
+        switch(conv) {
+            case Conv::C:
+                return Cf.at(pid) -> Interpolate(x,Q)/x;
+            case Conv::C1:
+                if(scheme == Scheme::CSS) schemeDep = SchemeDependence(pid,x,Q,Conv::C1);
+                return C1f.at(pid) -> Interpolate(x,Q)/x+schemeDep;
+            case Conv::C2:
+                if(scheme == Scheme::CSS) schemeDep = SchemeDependence(pid,x,Q,Conv::C2);
+                return C2f.at(pid) -> Interpolate(x,Q)/x+schemeDep;
+            case Conv::C1P1:
+                if(scheme == Scheme::CSS) schemeDep = SchemeDependence(pid,x,Q,Conv::C1P1);
+                return C1P1f.at(pid) -> Interpolate(x,Q)/x+schemeDep;
+            case Conv::C1P1P1:
+                if(scheme == Scheme::CSS) schemeDep = SchemeDependence(pid,x,Q,Conv::C1P1P1);
+                return C1P1P1f.at(pid) -> Interpolate(x,Q)/x+schemeDep;
+            case Conv::C1P2:
+                if(scheme == Scheme::CSS) schemeDep = SchemeDependence(pid,x,Q,Conv::C1P2);
+                return C1P2f.at(pid) -> Interpolate(x,Q)/x+schemeDep;
+            case Conv::C2P1:
+                if(scheme == Scheme::CSS) schemeDep = SchemeDependence(pid,x,Q,Conv::C2P1);
+                return C2P1f.at(pid) -> Interpolate(x,Q)/x+schemeDep;
+            case Conv::G1:
+                return G1Conv(pid,x,Q,0);
+            case Conv::G1P1:
+                return G1Conv(pid,x,Q,1);
+        }
+    }
+
+    // Helper function to generate Convolution grids
+    void Convolution::GenerateGrid(Process *process, std::map<std::thread::id,Utility::PDF*> pdfs_, Utility::Hoppet *hoppet_, Conv conv){
+        pdfs = pdfs_;
+        hoppet = hoppet_;
+        p = process;
+
+        GenerateGrid(conv);
+    }
+
+    // Calculate the requested convolution 
+    void Convolution::GenerateGrid(Conv conv) {
+        if(hoppet==NULL) throw std::runtime_error("Convolution: Called grid generation without first setting PDF and Hoppet members");
+        switch(conv) {
+            case Conv::C:
+                CalcCf();
+                break;
+            case Conv::C1:
+                CalcC1f();
+                break;
+            case Conv::C2:
+                CalcC2f();
+                break;
+            case Conv::C1P1:
+                CalcC1P1f();
+                break;
+            case Conv::C1P1P1:
+                CalcC1P1P1f();
+                break;
+            case Conv::C1P2:
+                CalcC1P2f();
+                break;
+            case Conv::C2P1:
+                CalcC2P1f();
+                break;
+        }
+    }
+
+    // For testing purposes only
+    void Convolution::TestConv(Utility::Grid2D *g) const {
+        double x = 0.01, mu = 30.08973; 
+        std::cout << g -> Interpolate(x,mu)/x << std::endl;
+    }
+
+    using namespace std::placeholders;
+
+    // Calculate the CxF that appears inside the b-space integration
+    void Convolution::CalcCf() {
+        using namespace QCD;
+
+        std::cout << "Initializing CxF..." << std::endl;
+
+        //Initialize the Grid2D objects
+        for(int pid = -5; pid < 6; pid++) {
+            Cf[pid] = new Utility::Grid2D(xVec,qVec);
+        }
+
+        //Calculate the convolutions
+        for(unsigned int iX = 0; iX < nX; iX++) {
+            double x = Cf.at(1) -> GetX(iX);
+            for(unsigned int iQ = 0; iQ < nQ; iQ++) {
+                double mu = Cf.at(1) -> GetY(iQ);
+                int nf = pdfs[mainThread] -> NF(mu);
+                for(int pid = 0; pid < 6; pid++) {
+                    if(pid > nf) {
+                        Cf.at(pid) -> AddPoint(x,mu,0);
+                        Cf.at(-pid) -> AddPoint(x,mu,0);
+                        continue;
+                    }
+                    double fpdf = pdfs[mainThread] -> Apdf(pid,x,mu);
+                    double conv = fpdf*x;
+                    if(order>0) {
+                        conv += pdfs[mainThread]->Alpi(mu)*GetConv(pid,x,mu,Conv::C1)*x;
+                        conv += ScaleVariation(1,pid,x,mu)*x;
+                        if(order>1) {
+                            conv += pow(pdfs[mainThread]->Alpi(mu),2)*GetConv(pid,x,mu,Conv::C2)*x;
+                            conv += ScaleVariation(2,pid,x,mu)*x;
+                        }
+                    }
+                    Cf.at(pid) -> AddPoint(x,mu,conv);
+                    if(fabs(pid) == 1 || fabs(pid) == 2) {
+                        double fpdf2 = pdfs[mainThread] -> Apdf(-pid,x,mu);
+                        double conv2 = fpdf2*x;
+                        if(order>0) {
+                            conv2 += pdfs[mainThread]->Alpi(mu)*GetConv(-pid,x,mu,Conv::C1)*x;
+                            conv2 += ScaleVariation(1,-pid,x,mu)*x;
+                            if(order>1) {
+                                conv2 +=pow(pdfs[mainThread]->Alpi(mu),2)*GetConv(-pid,x,mu,Conv::C2)*x;
+                                conv2 += ScaleVariation(2,-pid,x,mu)*x;
+                            }
+                        }
+                        Cf.at(-pid) -> AddPoint(x,mu,conv2);
+                    } else if(pid != 0) {
+                        Cf.at(-pid) -> AddPoint(x,mu,conv);
+                    }
+                }
+            }
+        }
+    }
+
+    // Calculate Scale Variations for the resummed CxF piece
+    double Convolution::ScaleVariation(int scaleOrder, int pid, double x, double mu) {
+        using namespace QCD;
+        double conv=0, fpdf = pdfs[mainThread]->Apdf(pid,x,mu);
+        if(scaleOrder==1) {
+            if(C2*B0 != C1) {
+                double logB0C2C1 = 2*log(B0*C2/C1);
+                int nf = pdfs[mainThread] -> NF(mu);
+                conv += (-1.0/4.0*r->GetA1()*pow(logB0C2C1,2)+0.5*r->GetB1(nf)*logB0C2C1)*fpdf;
+            }
+            if(C3 != B0) {
+                std::map<int,double> hoppetOut = hoppet->GetConvolution(x,mu,1);
+                conv -= hoppetOut[pid]*log(C3/B0);
+            }
+            return conv*pdfs[mainThread]->Alpi(mu);
+        } else if(scaleOrder==2) {
+            if(C2*B0 != C1) {
+                int nf = pdfs[mainThread] -> NF(mu);
+                double A1c = r->GetA1();
+                double A2c = r->GetA2(nf);
+                double B1c = r->GetB1(nf);
+                double B2c = r->GetB2(nf);
+                double logB0C2C1 = 2*log(B0*C2/C1);
+                double logC3B0 = 2*log(C3/B0);
+                double C1Val = C1Conv(pid,x,mu,mainThread,0)+0.5*p->H1()*fpdf;
+                conv += (-1.0/4.0*beta0(nf)*A1c*pow(logB0C2C1,2)*logC3B0
+                        + 0.5*beta0(nf)*B1c*logB0C2C1*logC3B0+1.0/32.0*pow(A1c,2)*pow(logB0C2C1,4)
+                        - 1.0/12.0*beta0(nf)*A1c*pow(logB0C2C1,3)-1.0/8.0*A1c*B1c*pow(logB0C2C1,3)
+                        + 0.5*B2c*logB0C2C1-0.25*A2c*pow(logB0C2C1,2)+1.0/8.0*pow(B1c*logB0C2C1,2)
+                        + 0.25*beta0(nf)*B1c*pow(logB0C2C1,2))*fpdf
+                    + (0.5*B1c*logB0C2C1-0.25*A1c*pow(logB0C2C1,2))*C1Val;
+            }
+            if(C3 != B0) {
+                int nf = pdfs[mainThread] -> NF(mu);
+                double logB0C2C1 = 2*log(B0*C2/C1);
+                double logC3B0 = 2*log(C3/B0);
+                double A1c = r->GetA1();
+                double A2c = r->GetA2(nf);
+                double B1c = r->GetB1(nf);
+                double B2c = r->GetB2(nf);
+                std::map<int,double> P1f = hoppet->GetConvolution(x,mu,1);
+                std::map<int,double> P1P1f = hoppet->GetConvolution(x,mu,1,1);
+                std::map<int,double> P2f = hoppet->GetConvolution(x,mu,2);
+                double C1Val = C1Conv(pid,x,mu,mainThread,0)+0.5*p->H1()*fpdf;
+                double C1P1Val = C1Conv(pid,x,mu,mainThread,1)+0.5*p->H1()*P1f[pid];
+                conv += (beta0(nf)*C1Val-0.5*C1P1Val-0.25*P2f[pid])*logC3B0
+                    + 1.0/8.0*P1P1f[pid]*pow(logC3B0,2)-0.25*B1c*P1f[pid]*logB0C2C1*logC3B0
+                    + 1.0/8.0*A1c*P1f[pid]*pow(logB0C2C1,2)*logC3B0-beta0(nf)/4*P1f[pid]*pow(logC3B0,2);
+            }
+            return conv*pow(pdfs[mainThread]->Alpi(mu),2);
+        }
+    }
+
+    void Convolution::CalcC1f() {
+        std::cout << "Initializing C1xF..." << std::endl;
+        auto fp = std::bind(&Convolution::ParallelC1, this, _1, _2, _3, 0);
+        C1f = Parallel(fp);
+        for(int pid = -5; pid < 6; pid++) {
+            std::cout << "Testing Convolution for pid = " << pid << std::endl;
+            TestConv(C1f[pid]);
+        }
+    }
+
+    void Convolution::CalcC2f() {
+        std::cout << "Initializing C2xF..." << std::endl;
+        auto fp = std::bind(&Convolution::ParallelC2, this, _1, _2, _3, 0);
+        C2f = Parallel(fp);
+        for(int pid = -5; pid < 6; pid++) {
+            std::cout << "Testing Convolution for pid = " << pid << std::endl;
+            TestConv(C2f[pid]);
+        }
+    }
+
+    void Convolution::CalcC1P1f() {
+        std::cout << "Initializing C1P1xF..." << std::endl;
+        auto fp = std::bind(&Convolution::ParallelC1, this, _1, _2, _3, 1);
+        C1P1f = Parallel(fp);
+        for(int pid = -5; pid < 6; pid++) {
+            std::cout << "Testing Convolution for pid = " << pid << std::endl;
+            TestConv(C1P1f[pid]);
+        }
+    }
+
+    void Convolution::CalcC1P2f() {
+        std::cout << "Initializing C1P2xF..." << std::endl;
+        auto fp = std::bind(&Convolution::ParallelC1, this, _1, _2, _3, 2);
+        C1P2f = Parallel(fp);
+        for(int pid = -5; pid < 6; pid++) {
+            std::cout << "Testing Convolution for pid = " << pid << std::endl;
+            TestConv(C1P2f[pid]);
+        }
+    }
+
+    void Convolution::CalcC1P1P1f() {
+        std::cout << "Initializing C1P1P1xF..." << std::endl;
+        auto fp = std::bind(&Convolution::ParallelC1, this, _1, _2, _3, 11);
+        C1P1P1f = Parallel(fp);
+        for(int pid = -5; pid < 6; pid++) {
+            std::cout << "Testing Convolution for pid = " << pid << std::endl;
+            TestConv(C1P1P1f[pid]);
+        }
+    }
+
+    void Convolution::CalcC2P1f() {
+        std::cout << "Initializing C2P1xF..." << std::endl;
+        auto fp = std::bind(&Convolution::ParallelC2, this, _1, _2, _3, 1);
+        C2P1f = Parallel(fp);
+        for(int pid = -5; pid < 6; pid++) {
+            std::cout << "Testing Convolution for pid = " << pid << std::endl;
+            TestConv(C2P1f[pid]);
+        }
+    }
+
+    std::map<int, Utility::Grid2D*> Convolution::Parallel(std::function<void(int,std::map<int,Utility::Grid2D*>,std::thread::id)> func) const {
+        std::map<int, Utility::Grid2D*> localConv;
+        //Initialize the Grid2D objects
+        for(int pid = -5; pid < 6; pid++) {
+            Utility::Grid2D* g = new Utility::Grid2D(xVec,qVec);
+            localConv[pid] = g;
+        }
+
+        std::vector<std::shared_future<void>> futures;
+        for(int iQ = 0; iQ < nQ; iQ++) {
+            futures.emplace_back(
+                    pool->enqueue([this,iQ,func,localConv] {
+                        func(iQ,localConv,std::this_thread::get_id());
+                        })
+                    );
+        }
+
+        WaitAll(futures);
+
+        return localConv;
+    }
+
+
+    void Convolution::ParallelC1(int iQ, std::map<int,Utility::Grid2D*> g, std::thread::id id, int mode) {
+        auto fp = std::bind(&Convolution::C1Conv, this, _1, _2, _3, _4, mode);
+        ConvolveWrapper(iQ,g,id,fp);
+    }
+
+    void Convolution::ParallelC2(int iQ, std::map<int,Utility::Grid2D*> g, std::thread::id id, int mode) {
+        auto fp = std::bind(&Convolution::C2Conv, this, _1, _2, _3, _4, mode);
+        ConvolveWrapper(iQ,g,id,fp);
+    }
+
+    std::mutex write;
+    void Convolution::ConvolveWrapper(int iQ, std::map<int,Utility::Grid2D*> g, std::thread::id id, std::function<double(int,double,double,std::thread::id)> func) {
+        double mu = g.at(1) -> GetY(iQ);
+        int nf = pdfs[id] -> NF(mu);
+        for(int iX = 0; iX < nX; iX++) {
+            double x = g.at(1) -> GetX(iX);
+            for(int pid = 0; pid < 6; pid++) {
+                if(pid > nf) {
+                    g.at(pid) -> AddPoint(x,mu,0);
+                    g.at(-pid) -> AddPoint(x,mu,0);
+                    continue;
+                }
+                double conv = func(pid,x,mu,id)*x;
+                g.at(pid) -> AddPoint(x,mu,conv);
+                if(fabs(pid) == 1 || fabs(pid) == 2)
+                    g.at(-pid) -> AddPoint(x,mu,func(-pid,x,mu,id)*x);
+                else if(pid != 0) 
+                    g.at(-pid) -> AddPoint(x,mu,conv);
+            }
+        }
+    }
+
+    double Convolution::Convolve(double x, std::function<double(double)> func) const {
+        Utility::Integrate IntFp(func);
+        return IntFp.DEIntegrate(x, 1.0, 1E-16, 1E-8);
+    }
+
+    double Convolution::C1Conv(int pid, double x, double mu, std::thread::id id, int mode) {
+        auto fp = std::bind(&Convolution::C1xF, this, pid, x, mu, _1, id, mode);
+//        double c = Convolve(x,fp);
+        return Convolve(x,fp);
+//        double fpdf;
+//        if(mode == 0) {
+//            fpdf = pdfs[id] -> Apdf(pid, x, mu);
+//        } else {
+//            int j = mode/10;
+//            int i = mode%10;
+//            std::map<int, double> hoppetOut = hoppet -> GetConvolution(x, mu, i, j);
+//            fpdf = hoppetOut[pid];
+//        }
+//        return c;
+    }
+
+    double Convolution::C2Conv(int pid, double x, double mu, std::thread::id id, int mode) {
+        using namespace QCD;
+
+        auto fp = std::bind(&Convolution::C2xF, this, pid, x, mu, _1, id, mode);
+        double c = Convolve(x,fp);
+        double fpdf;
+        if(mode == 0) {
+            fpdf = pdfs[id] -> Apdf(pid, x, mu);
+        } else {
+            std::map<int, double> hoppetOut = hoppet -> GetConvolution(x, mu, 1);
+            fpdf = hoppetOut[pid];
+        }
+        int nf = pdfs[id] -> NF(mu);
+        auto plusFunc = std::bind(&Convolution::SxF, this, pid, x, mu, _1, id, mode);
+        if(pid != 0) {
+            return c + 0.5*((7.0*ZETA3/2.0-101.0/27.0)*CA*CF+14.0/27.0*CF*nf)*(Convolve(x,plusFunc)+log(1-x)*fpdf);
+        } else {
+            return c + ((-101.0/27.0+7.0/2.0*ZETA3)*CA*CA+14.0/27.0*CA*nf)*(Convolve(x,plusFunc)+log(1-x)*fpdf);
+        }
+    }
+
+    double Convolution::G1Conv(int pid, double x, double mu, int mode) const {
+        auto fp = std::bind(&Convolution::G1xF, this, pid, x, mu, _1, mode);
+        return Convolve(x,fp);
+    }
+
+    double Convolution::SchemeDependence(int pid, double x, double mu, Conv conv) const {
+        double fpdf = 0, result;
+        std::map<int, double> hoppetOut;
+        int mode = -1, nf;
+        switch(conv) {
+            case Conv::C1: 
+                fpdf = pdfs.at(mainThread) -> Apdf(pid,x,mu);
+                return 0.5*p -> H1()*fpdf;
+            case Conv::C1P1:
+                hoppetOut = hoppet -> GetConvolution(x,mu,1);
+                fpdf = hoppetOut[pid];
+                return 0.5*p -> H1()*fpdf;
+            case Conv::C1P1P1:
+                hoppetOut = hoppet -> GetConvolution(x,mu,1,1);
+                fpdf = hoppetOut[pid];
+                return 0.5*p -> H1()*fpdf;
+            case Conv::C1P2:
+                hoppetOut = hoppet -> GetConvolution(x,mu,2);
+                fpdf = hoppetOut[pid];
+                return 0.5*p -> H1()*fpdf;
+            case Conv::C2:
+                fpdf = pdfs.at(mainThread) -> Apdf(pid,x,mu);
+                nf = pdfs.at(mainThread) -> NF(mu);
+                result = 0.5*(p -> H2(nf,mu) - 0.25*pow(p->H1(),2))*fpdf;
+                mode = 0;
+                break;
+            case Conv::C2P1:
+                hoppetOut = hoppet -> GetConvolution(x,mu,1);
+                fpdf = hoppetOut[pid];
+                nf = pdfs.at(mainThread) -> NF(mu);
+                result = 0.5*(p -> H2(nf,mu) - 0.25*pow(p->H1(),2))*fpdf;
+                mode = 1;
+                break;
+        }
+
+        auto fp = std::bind(&Convolution::HCxF, this, pid, x, mu, _1, mode);
+        return result + Convolve(x,fp);
+    }
+
+    double Convolution::HCxF(int pid, double x, double mu, double z, int mode) const {
+        double y = x/z, fpdf = 0, fpdfg = 0;
+
+        // Choose whether to convolute with PDF or with Splitting Function and PDF
+        // This is done to only have to code up the convolution function once to reduce typos
+        if(pid != 0) {
+            if(mode == 0) {
+                fpdf = pdfs.at(mainThread) -> Apdf(pid,z,mu);
+                fpdf = pdfs.at(mainThread) -> Apdf(0,z,mu);
+            } else {
+                std::map<int, double> hoppetOut = hoppet -> GetConvolution(z, mu, 1);
+                fpdf = hoppetOut[pid];
+                fpdfg = hoppetOut[0];
+            }
+            return 0.5*p->H1()*(0.5*QCD::CF*(1-y)*fpdf+0.5*y*(1-y)*fpdfg)/z;
+        } else {
+            if(mode == 0) {
+                fpdfg = pdfs.at(mainThread) -> Apdf(pid,z,mu);
+                for(int ipid = -5; ipid < 6; ipid++) {
+                    if(ipid != 0)
+                        fpdf += pdfs.at(mainThread) -> Apdf(ipid,z,mu);
+                }
+            } else {
+                std::map<int, double> hoppetOut = hoppet -> GetConvolution(z, mu, 1);
+                fpdfg = hoppetOut[pid];
+                for(int ipid = -5; ipid < 6; ipid++) {
+                    if(ipid != 0)
+                        fpdf += hoppetOut[ipid];
+                }
+            }
+            return 0.5*p->H1()*0.5*QCD::CF*y*fpdf/z;
+        }
+    }
+
+    double Convolution::C1xF(int pid, double x, double mu, double z, std::thread::id id, int mode) {
+        double fpdf, fpdfg;
+        // Choose whether to convolute with PDF or with Splitting Function and PDF
+        // This is done to only have to code up the convolution function once to reduce typos
+        if(pid != 0) {
+            if(mode == 0) {
+                fpdf = pdfs[id] -> Apdf(pid, z, mu);
+                fpdfg = pdfs[id] -> Apdf(0,z,mu);
+            } else {
+                int j = mode/10;
+                int i = mode%10;
+                std::map<int, double> hoppetOut = hoppet -> GetConvolution(z, mu, i, j);
+                fpdf = hoppetOut[pid];
+                fpdfg = hoppetOut[0];
+            }
+        } else { 
+            fpdf = 0;
+            if(mode == 0) {
+                fpdfg = pdfs[id] -> Apdf(pid,z,mu);
+                for(int ipid = -5; ipid < 6; ipid++) {
+                    if(ipid == 0) continue;
+                    fpdf += pdfs[id] -> Apdf(ipid,z,mu);
+                }
+            } else {
+                int j = mode/10;
+                int i = mode%10;
+                std::map<int, double> hoppetOut = hoppet -> GetConvolution(z, mu, i, j);
+                fpdfg = hoppetOut[pid];
+                for(int ipid = -5; ipid < 6; ipid++) {
+                    if(ipid == 0) continue;
+                    fpdf += hoppetOut[ipid];
+                }
+            }
+        }
+
+        double y = x/z;
+
+        if(pid != 0) return (0.5*QCD::CF*(1-y)*fpdf+0.5*y*(1-y)*fpdfg)/z;
+        else return (0.5*QCD::CF*y*fpdf)/z;
+    }
+
+    double Convolution::C2xF(int pid, double x, double mu, double z, std::thread::id id, int mode) {
+        using namespace QCD;
+        using namespace Utility;
+        double fpdf=0, fpdfg=0, fpdfqb=0, fpdfqp=0;
+        int nfEff = pdfs[id] -> NF(mu);
+        double y = x/z;
+        if(y == 1) return 0;
+
+        double CxFQQ, CxFQG, CxFQQB, CxFQQP, CxFGG, CxFGQ;
+
+        // Choose whether to convolute with PDF or with Splitting Function and PDF
+        // This is done to only have to code up the convolution function once to reduce typos
+        if(pid != 0) {
+            if(mode == 0) {
+                fpdf = pdfs[id] -> Apdf(pid, z, mu);
+                fpdfg = pdfs[id] -> Apdf(0,z,mu);
+                fpdfqb = pdfs[id] -> Apdf(-pid, z, mu);
+                for(int i = -5; i < 6; i++) {
+                    if(abs(i) != abs(pid) && i != 0)
+                        fpdfqp += pdfs[id] -> Apdf(i, z, mu);
+                }
+            } else {
+                std::map<int, double> hoppetOut = hoppet -> GetConvolution(z, mu, 1);
+                fpdf = hoppetOut[pid];
+                fpdfg = hoppetOut[0];
+                fpdfqb = hoppetOut[-pid];
+                for(int i = -5; i < 6; i++) {
+                    if(abs(i) != abs(pid) && i != 0)
+                        fpdfqp += hoppetOut[i];
+                }
+            }
+            // Quark channel
+            CxFQQ = CA*CF*((1.0+y*y)/(1-y)*(-xLi(3,1-y)/2.0+xLi(3,y)-xLi(2,y)*log(y)/2.0-0.5*xLi(2,y)*log(1-y)-1.0/24.0*pow(log(y),3)-0.5*pow(log(1-y),2)*log(y)
+                        +1.0/12.0*pi2*log(1-y)-pi2/8)+1.0/(1.0-y)*(-0.25*(11-3*y*y)*ZETA3-1.0/48.0*(-y*y+12*y+11)*pow(log(y),2)-1.0/36.0*(83.0*y*y-36.0*y+29.0)*log(y)+pi2*y/4.0)
+                    +(1-y)*(xLi(2,y)/2.0+0.5*log(1-y)*log(y))+(y+100)/27.0+0.25*y*log(1-y));
+            CxFQQ += CF*nfEff*((1.0+y*y)/(72.0*(1.0-y))*log(y)*(3.0*log(y)+10.0)+(-19.0*y-37.0)/108.0);
+            CxFQQ += CF*CF*((1.0+y*y)/(1.0-y)*(xLi(3,1-y)/2.0+xLi(2,y)*log(1.0-y)/2.0+3.0*xLi(2,y)*log(y)/2.0+3.0/4.0*log(y)*pow(log(1.0-y),2)+pow(log(y),2)*log(1-y)/4.0
+                        -1.0/12.0*pi2*log(1-y))
+                    +(1-y)*(-xLi(2,y)-1.5*log(1-y)*log(y)+2.0*pi2/3.0-29.0/4.0)+1.0/24.0*(1+y)*pow(log(y),3)
+                    +1.0/(1.0-y)*(1.0/8.0*(-2*y*y+2*y+3)*pow(log(y),2)+0.25*(17*y*y-13*y+4)*log(y))-y/4.0*log(1-y));
+            CxFQQ += CF*CF*((1.0+y*y)/(1.0-y)*(5*(ZETA3-xLi(3,y))/2.0));
+            CxFQQ -= CF*CF/4.0*((2*pi2-18)*(1-y)-(1+y)*log(y));
+            CxFQQ += CF*(1/y*(1-y)*(2*y*y-y+2)*(xLi(2,y)/6.0+1.0/6.0*log(1-y)*log(y)-pi2/36)+1.0/(216*y)*(1-y)*(136*y*y-143*y+172)-1.0/48.0*(8*y*y+3*y+3)*pow(log(y),2)
+                    +1.0/36.0*(32*y*y-30*y+21)*log(y)+1.0/24.0*(1+y)*pow(log(y),3));
+            CxFQQ /= 2.0;
+            CxFQQ *= fpdf/z;
+
+            // Gluon channel
+            CxFQG = CA*(-1.0/(12*y)*(1-y)*(11*y*y-y+2)*xLi(2,1-y)
+                    +(2*y*y-2*y+1)*(xLi(3,1-y)/8-xLi(2,1-y)*log(1-y)/8
+                        +pow(log(1-y),3)/48)
+                    + (2*y*y+2*y+1)*(3*xLi(3,-y)/8+xLi(3,1/(1+y))/4.0
+                        -xLi(2,-y)*log(y)/8-pow(log(1+y),3)/24+pow(log(y),2)*log(1+y)/16.0
+                        +pi2/48*log(1+y))
+                    +0.25*y*(1+y)*xLi(2,-y)+y*xLi(3,y)-0.5*y*xLi(2,1-y)*log(y)
+                    -y*xLi(2,y)*log(y)-3.0/8.0*(2*y*y+1)*ZETA3-149*y*y/216.0
+                    -(44*y*y-12*y+3)/96*pow(log(y),2)
+                    +(68*y*y+6*pi2*y-30*y+21)/72.0*log(y)+pi2*y/24.0+43*y/48.0+43/(108*y)
+                    +(2*y+1)/48.0*pow(log(y),3)-0.5*y*log(1-y)*pow(log(y),2)
+                    -(1-y)/8.0*y*pow(log(1-y),2)
+                    +0.25*y*(1+y)*log(1+y)*log(y)+(3-4*y)/16.0*y*log(1-y)-35.0/48.0);
+            CxFQG += CF*((2*y*y-2*y+1)*(ZETA3-xLi(3,1-y)/8.0-xLi(3,y)/8.0
+                        +xLi(2,1-y)*log(1-y)/8.0+xLi(2,y)*log(y)/8.0-pow(log(1-y),3)/48.0
+                        +log(y)*pow(log(1-y),2)/16.0+pow(log(y),2)*log(1-y)/16.0)-3*y*y/8.0
+                    -(4*y*y-2*y+1)/96.0*pow(log(y),3)+(-8*y*y+12*y+1)/64.0*pow(log(y),2)
+                    +(-8*y*y+23*y+8)/32.0*log(y)+5*pi2/24.0*(1-y)*y+11*y/32.0
+                    +(1-y)*y/8.0*pow(log(1-y),2)-0.25*(1-y)*y*log(1-y)*log(y)
+                    -(3-4*y)*y/16.0*log(1-y)-9.0/32.0);
+            CxFQG -= CF/4.0*(y*log(y)+0.5*(1-y*y)+(pi2-8)*y*(1-y));
+            CxFQG *= fpdfg/z;
+
+            // QBar channel
+            CxFQQB = CF*(CF-0.5*CA)*((1+y*y)/(1+y)*(3*xLi(3,-y)/2.0+xLi(3,y)+xLi(3,1.0/(1+y))-xLi(2,-y)*log(y)/2.0-xLi(2,y)*log(y)/2.0-pow(log(y),3)/24.0-pow(log(1+y),3)/6.0
+                        +0.25*log(1+y)*pow(log(y),2)+pi2/12.0*log(1+y)-3*ZETA3/4.0)+(1-y)*(xLi(2,y)/2.0+0.5*log(1-y)*log(y)+15.0/8.0)
+                    -0.5*(1+y)*(xLi(2,-y)+log(y)*log(1+y))+pi2/24.0*(y-3)+(11*y+3)/8.0*log(y));
+            CxFQQB += CF*(1.0/(12*y)*(1-y)*(2*y*y-y+2)*(xLi(2,y)+log(1-y)*log(y)-pi2/6.0)+1.0/(432*y)*(1-y)*(136*y*y-143*y+172)-(8*y*y+3*y+3)/96.0*pow(log(y),2)
+                    +(32*y*y-30*y+21)/72.0*log(y)+(1+y)/48.0*pow(log(y),3));
+            CxFQQB *= fpdfqb/z;
+
+            // QPrime channel
+            CxFQQP = CF*((1-y)/(12*y)*(2*y*y-y+2)*(xLi(2,y)+log(1-y)*log(y)-pi2/6)+(1-y)/(432*y)*(136*y*y-143*y+172)+(1+y)/48.0*pow(log(y),3)
+                    -(8*y*y+3*y+3)/96.0*pow(log(y),2)+(32*y*y-30*y+21)/72.0*log(y));
+            CxFQQP *= fpdfqp/z;
+
+            return CxFQQ + CxFQG + CxFQQB + CxFQQP;
+        } else {
+            if(mode == 0) {
+                fpdfg = pdfs[id] -> Apdf(pid, z, mu);
+                for(int ipid = -5; ipid < 6; ipid++) {
+                    if(ipid != 0)
+                        fpdf += pdfs[id] -> Apdf(ipid, z, mu);
+                }
+            } else {
+                std::map<int, double> hoppetOut = hoppet -> GetConvolution(z, mu, 1);
+                fpdfg = hoppetOut[pid];
+                for(int ipid = -5; ipid < 6; ipid++) {
+                    if(ipid != 0)
+                        fpdf += hoppetOut[ipid];
+                }
+            }
+
+            // Gluon Channel
+            double yPlus = 1+y+y*y;
+            double yMinus = 1-y+y*y;
+            CxFGG = CA*CA*(pow(yPlus,2)/(y*(1+y))*(2*xLi(3,y/(1+y))-xLi(3,-y))+(2-17*y-22*y*y-10*pow(y,3)-12*pow(y,4))/(2*y*(1+y))*ZETA3
+                    -(5-y+5*y*y+pow(y,3)-5*pow(y,4)+pow(y,5))/(y*(1-y)*(1+y))*(xLi(3,y)-ZETA3)+xLi(2,y)*log(y)/(1-y)*(3-y+3*y*y+pow(y,3)-3*pow(y,4)+pow(y,5))/(y*(1+y))
+                    +pow(yPlus,2)/(y*(1+y))*(log(y)*xLi(2,-y)-1.0/3.0*pow(log(1+y),3)+pi2/6*log(1+y))
+                    +(1-y)/(3*y)*(11-y+11*y*y)*xLi(2,1-y)+1.0/12.0*y*log(1-y)-1.0/6.0*pow(log(y),3)/(1-y)*pow(1+y-y*y,2)/(1+y)
+                    +pow(log(y),2)*(pow(yMinus,2)/(2*y*(1-y))*log(1-y)-pow(yPlus,2)/(2*y*(1+y))*log(1+y)+(25-11*y+44*y*y)/24.0)
+                    +log(y)*(pow(yPlus,2)/(y*(1+y))*pow(log(1+y),2)+pow(yMinus,2)/(2*y*(1-y))*pow(log(1-y),2)-(72+773*y+149*y*y+536*y*y*y)/(72*y))
+                    +517.0/27.0-449.0/(27.0*y)-380*y/27.0+835*y*y/54.0)
+                +CA*nfEff*((1+y)/12*pow(log(y),2)+1.0/36.0*(13+10*y)*log(y)-y/12.0*log(1-y)-83.0/54.0+121/(108*y)+55.0/54.0*y-139/108.0*y*y)
+                +CF*nfEff*((1+y)/12*pow(log(y),3)+1.0/8.0*(3+y)*pow(log(y),2)+3.0/2.0*(1+y)*log(y)-(1-y)/(6*y)*(1-23*y+y*y));
+            CxFGG += CA*CA*((1+y)/y*log(y)+2*(1-y)/y);
+            CxFGG /= 2.0;
+            CxFGG *= fpdfg/z;
+
+            // Quark Channel
+            CxFGQ = CF*CF*(1.0/48.0*(2-y)*pow(log(y),3)-1.0/32.0*(3*y+4)*pow(log(y),2)+5.0/16.0*(y-3)*log(y)
+                    +1.0/12.0*(1/y+y/2-1)*pow(log(1-y),3)+1.0/16.0*(y+6/y-6)*pow(log(1-y),2)
+                    +(5*y/8+2/y-2)*log(1-y)+5.0/8.0-13.0/16.0*y)
+                +CF*nfEff*(1.0/(24*y)*(1+pow(1-y,2))*pow(log(1-y),2)+1.0/18.0*(y+5/y-5)*log(1-y)
+                        -14.0/27.0+14.0/(27*y)+13.0/108.0*y)
+                +CF*CA*(-(1+pow(1+y,2))/(2*y)*xLi(3,1/(1+y))+(0.5-5/(2*y)-5.0/4.0*y)*xLi(3,y)
+                        -3.0/(4*y)*(1+pow(1+y,2))*xLi(3,-y)+(2-11/(6*y)-y/2+y*y/3+(-0.5+3/(2*y)+3*y/4)*log(y))*xLi(2,y)
+                        +(z/4.0+(1+pow(1+y,2))/(4*y)*log(y))*xLi(2,-y)
+                        +(1+pow(1+y,2))/(12*y)*pow(log(1+y),3)-1.0/(24*y)*((1+pow(1+y,2))*(3*pow(log(y),2)+pi2)-6*y*y*log(y))*log(1+y)
+                        -(1+pow(1-y,2))/(24*y)*pow(log(1-y),3)+1/(48*y)*(6*(1+pow(1-y,2))*log(y)-5*y*y-22*(1-y))*pow(log(1-y),2)
+                        +1.0/(72*y)*(-152+152*y-43*y*y+6*(-22+24*y-9*y*y+4*y*y*y)*log(y)+9*(1+pow(1-y,2))*pow(log(y),2))*log(1-y)
+                        -1.0/12.0*(1+y/2)*pow(log(y),3)+1.0/48.0*(36+9*y+8*y*y)*pow(log(y),2)+(-107/24.0-1/y+y/12-11.0/9.0*y*y)*log(y)
+                        +1.0/y*(4*ZETA3-503/54+11.0/36.0*pi2)+1007.0/108.0-pi2/3.0-5.0/2.0*ZETA3+y*(pi2/3.0+2*ZETA3-133.0/108.0)+y*y*(38.0/27.0-pi2/18.0));
+            CxFGQ += CF*CF*3.0/4.0*y+CF*CA/y*((1+y)*log(y)+2*(1-y)-(5+pi2)/4.0*y*y);
+            CxFGQ *= fpdf/z;
+
+            return CxFGG+CxFGQ;
+        }
+    }
+
+    double Convolution::SxF(int pid, double x, double mu, double z, std::thread::id id, int mode) {
+        double fpdf1, fpdf2;
+        // Choose whether to convolute with PDF or with Splitting Function and PDF
+        // This is done to only have to code up the convolution function once to reduce typos
+        if(mode == 0) {
+            fpdf1 = pdfs[id] -> Apdf(pid, x/z, mu);
+            fpdf2 = pdfs[id] -> Apdf(pid, x, mu);
+        } else {
+            std::map<int, double> hoppetOut = hoppet -> GetConvolution(x/z, mu, 1);
+            fpdf1 = hoppetOut[pid];
+            hoppetOut = hoppet -> GetConvolution(x, mu, 1);
+            fpdf2 = hoppetOut[pid];
+        }
+
+        return (fpdf1/z-fpdf2)/(1.0-z);
+    }
+
+    double Convolution::G1xF(int pid, double x, double mu, double z, int mode) const {
+        double fpdf, fpdfg;
+        // Choose whether to convolute with PDF or with Splitting Function and PDF
+        // This is done to only have to code up the convolution function once to reduce typos
+        fpdf = 0;
+        if(mode == 0) {
+            fpdfg = pdfs.at(mainThread) -> Apdf(0,z,mu);
+            for(int ipid = -5; ipid < 6; ipid++) {
+                if(ipid == 0) continue;
+                fpdf += pdfs.at(mainThread) -> Apdf(ipid,z,mu);
+            }
+        } else {
+            int j = mode/10;
+            int i = mode%10;
+            std::map<int, double> hoppetOut = hoppet -> GetConvolution(z, mu, i, j);
+            fpdfg = hoppetOut[pid];
+            for(int ipid = -5; ipid < 6; ipid++) {
+                if(ipid == 0) continue;
+                fpdf += hoppetOut[ipid];
+            }
+        }
+
+        double y = x/z;
+
+        return QCD::CF*(1-y)/y*fpdf/z+QCD::CA*(1-y)/y*fpdfg/z;
+    }
+
+    static int callback(void *NotUsed, int argc, char **argv, char **azColName) {
+        for(int i = 0; i < argc; i++) {
+            printf("%s = %s\n", azColName[i], argv[i] ? argv[i] : "NULL");
+        }
+        printf("\n");
+        return 0;
+    }
+
+    Grid2D Convolution::GetGrid(Conv conv) {
+        switch(conv) {
+            case Conv::C1:
+                return C1f;
+            case Conv::C1P1:
+                return C1P1f;
+            case Conv::C1P1P1:
+                return C1P1P1f;
+            case Conv::C1P2:
+                return C1P2f;
+            case Conv::C2:
+                return C2f;
+            case Conv::C2P1:
+                return C2P1f;
+        }
+    }
+
+    void Convolution::SetGrid(Conv conv, Grid2D g) {
+        switch(conv) {
+            case Conv::C1:
+                C1f = g;
+                break;
+            case Conv::C1P1:
+                C1P1f = g;
+                break;
+            case Conv::C1P1P1:
+                C1P1P1f = g;
+                break;
+            case Conv::C1P2:
+                C1P2f = g;
+                break;
+            case Conv::C2:
+                C2f = g;
+                break;
+            case Conv::C2P1:
+                C2P1f = g;
+                break;
+        }
+    }
+}

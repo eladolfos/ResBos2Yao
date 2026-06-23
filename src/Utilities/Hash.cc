@@ -1,0 +1,2 @@
+#include "ResBos/Hash.hh"
+

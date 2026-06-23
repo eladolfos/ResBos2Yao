@@ -1,0 +1,41 @@
+# Try to find BAT
+# Defines:
+#   BAT_FOUND
+#   BAT_INCLUDE_DIR
+#   BAT_INCLUDE_DIRS (not cached)
+#   BAT_LIBRARY (not cached)
+#   BAT_LIBRARIES 
+#   BAT_LIBRARY_DIR (not cached)
+
+find_library(BAT_LIBRARY NAMES BAT
+    HINTS $ENV{BAT_ROOT_DIR}/lib ${BAT_ROOT_DIR}/lib)
+
+IF(${BAT_LIBRARY} MATCHES "BAT_LIBRARY-NOTFOUND")
+    FIND_PROGRAM(BAT_CONFIG_EXECUTABLE NAMES bat-config
+        HINTS $ENV{BAT_ROOT_DIR}/bin ${BAT_ROOT_DIR}/bin)
+    IF(${BAT_CONFIG_EXECUTABLE} MATCHES "BAT_CONFIG_EXECUTABLE-NOTFOUND")
+        MESSAGE(STATUS "Looking for BAT... bat-config executable not found")
+    ELSE(${BAT_CONFIG_EXECUTABLE} MATCHES "BAT_CONFIG_EXECUTABLE-NOTFOUND")
+        MESSAGE(STATUS "Looking for BAT... using bat-config executable")
+        EXEC_PROGRAM(${BAT_CONFIG_EXECUTABLE} ARGS "--prefix" OUTPUT_VARIABLE BAT_PREFIX)
+        find_library(BAT_LIBRARY NAMES BAT libBAT BATmodels libBATmodels BATmtf libBATmtf PATHS ${BAT_PREFIX}/lib)
+    ENDIF(${BAT_CONFIG_EXECUTABLE} MATCHES "BAT_CONFIG_EXECUTABLE-NOTFOUND")
+ENDIF(${BAT_LIBRARY} MATCHES "BAT_LIBRARY-NOTFOUND")
+
+find_path(BAT_INCLUDE_DIR BAT/BCMath.h
+    HINTS $ENV{BAT_ROOT_DIR}/include ${BAT_ROOT_DIR}/include ${BAT_PREFIX}/include)
+
+mark_as_advanced(BAT_LIBRARY BAT_INCLUDE_DIR)
+
+# handle QUIETLY and REQUIRED arguments and set BAT_FOUND to TRUE if
+# all listed variables are TRUE
+include(FindPackageHandleStandardArgs)
+FIND_PACKAGE_HANDLE_STANDARD_ARGS(BAT DEFAULT_MSG BAT_INCLUDE_DIR BAT_LIBRARY)
+
+set(BAT_LIBRARIES ${BAT_LIBRARY})
+get_filename_component(BAT_LIBRARY_DIRS ${BAT_LIBRARY} PATH)
+
+set(BAT_INCLUDE_DIRS ${BAT_INCLUDE_DIR})
+
+mark_as_advanced(BAT_FOUND)
+

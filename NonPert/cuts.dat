@@ -1,0 +1,20 @@
+# Configuration file for the cuts to be preformed
+#   -1 for a Maximum means no cut
+
+# Intermediate Boson Cuts
+M34Min = 0
+M34Max = -1
+pt34Min = 0
+pt34Max = -1
+y34Min = 0
+y34Max = -1
+
+# Final State Particle Cuts
+pt3Min = 0
+pt3Max = 0
+y3Min = 0
+y3Max = 0
+pt4Min = 0
+pt4Max = 0
+y4Min = 0
+y4Max = 0

@@ -1,0 +1,6 @@
+add_subdirectory(Utilities)
+add_subdirectory(Beam)
+add_subdirectory(Process)
+add_subdirectory(Calculation)
+add_subdirectory(IntegrationTests)
+#add_subdirectory(End2EndTests)

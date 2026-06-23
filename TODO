@@ -1,0 +1,26 @@
+- Ensure that the cross-section comes out right
+    - A0
+    - Z0
+    - etc.
+- Allow MCFM to set Higgs branching ratios etc.
+- Profiling and speed improvements (Integration etc.)
+- Update GTests for untested code
+- Figure out better way for Pert pieces in matrix element calculation
+- Get the G Terms working correctly for gluon initiated states (Just need testing)
+- Allow user to define decay products (electron or muon)
+- Add in the different Higgs decay modes
+    - ZZ
+    - WW
+    - ZA
+    - etc.
+- Finish up the other processes:
+    - WW
+    - ZZ
+    - AA
+    - Hj
+    - etc
+- Add in other EW schemes (ZFitter interface?)
+- Consistent complex mass scheme
+- Allow user to set perturbative scale (beyond Q and MT) 
+    - Maybe add in a custom interpreter that can also be used for cuts
+- Fitting for Non-Pert function (Speed improvements, functional forms, scale variations)

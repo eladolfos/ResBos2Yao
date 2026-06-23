@@ -1,0 +1,105 @@
+#ifndef CONVOLUTION_HH
+#define CONVOLUTION_HH
+
+#include <map>
+#include <cmath>
+#include <vector>
+#include <thread>
+#include <functional>
+#include <string>
+
+#include "ResBos/Enums.hh"
+#include "ResBos/Settings.hh"
+#include "ResBos/QCDConst.hh"
+//#include "sqlite3.h"
+
+namespace Utility  {
+    class Grid2D;
+    class PDF;
+    class Hoppet;
+}
+
+namespace ResBos {
+
+    class Process;
+    class ResBos;
+  
+    typedef std::map<int,Utility::Grid2D*> Grid2D;
+    // Class to preform the convolutions
+    class Convolution {
+        public: 
+            Convolution(int, Scheme, double, double, double);
+            Convolution(const Convolution&);
+            virtual ~Convolution() {
+                delete hoppet;
+            }
+
+            void SetPDFs(std::map<std::thread::id,Utility::PDF*> pdfs_) {pdfs = pdfs_;}
+            void GenerateGrid(Process *p, std::map<std::thread::id,Utility::PDF*> pdfs, Utility::Hoppet *hoppet, Conv); 
+            void GenerateGrid(Conv conv);
+            virtual double GetConv(int pid, double x, double Q, Conv conv);
+            double GetConvTest(int pid, double x, double Q, Conv conv);
+            virtual std::map<int,double> GetConv(double x, double Q, Conv conv) const;
+            void SetHoppet(Utility::Hoppet *h) {hoppet = h;}
+            void SetGrid(Conv,Grid2D);
+            virtual Grid2D GetGrid(Conv);
+            void SetC1C2C3(double C1_, double C2_, double C3_) {
+                C1 = C1_*QCD::B0; C2 = C2_; C3 = C3_*QCD::B0;
+            }
+            void SetScheme(Scheme scheme_) {scheme = scheme_;}
+        private:
+            std::map<int, Utility::Grid2D*> Cf, C1f, C2f, C1P1f, C1P2f, C1P1P1f, C2P1f;
+            std::vector<double> xVec, qVec;
+            Utility::Hoppet *hoppet;
+            std::map<std::thread::id,Utility::PDF*> pdfs;
+            double muF, muR;
+            int order;
+            const int nX = 161, nQ = 36;
+            Scheme scheme;
+            double C1, C2, C3;
+
+            // Function to test each convolution to compare to old code
+            void TestConv(Utility::Grid2D* g) const;
+
+            // Driver functions to calculate convolutions
+            void CalcCf();
+            void CalcC1f();
+            void CalcC2f();
+            void CalcC1P1f();
+            void CalcC1P2f();
+            void CalcC1P1P1f();
+            void CalcC2P1f();
+
+            // Allow convolutions to be preformed in parallel
+            std::map<int,Utility::Grid2D*> Parallel(std::function<void(int,std::map<int,Utility::Grid2D*>,std::thread::id)>) const;
+            void ParallelC1(int iQ, std::map<int,Utility::Grid2D*> g, std::thread::id id, int mode);
+            void ParallelC2(int iQ, std::map<int,Utility::Grid2D*> g, std::thread::id id, int mode);
+
+            // Actual convolution calculations
+            void ConvolveWrapper(int, std::map<int,Utility::Grid2D*>, std::thread::id, std::function<double(int,double,double,std::thread::id)>);
+            double C1Conv(int pid, double x, double muF,std::thread::id, int mode);
+            double C2Conv(int pid, double x, double muF,std::thread::id, int mode);
+            double G1Conv(int pid, double x, double muF, int mode) const;
+            double Convolve(double x, std::function<double(double)>) const;
+
+            // Functions for CSS scheme dependence, must be run each time since grids are stored in CFG format to make more universal
+            double SchemeDependence(int,double,double,Conv) const;
+            double HCxF(int,double,double,double,int) const;
+
+            // Integrands and plus functions for convolution calculations
+            double C1xF(int pid, double x, double muF, double z, std::thread::id, int mode);
+            double C2xF(int pid, double x, double muF, double z, std::thread::id, int mode);
+            double SxF(int pid, double x, double muF, double z, std::thread::id, int mode);
+            double G1xF(int pid, double x, double muF, double z, int mode) const;
+
+            // Scale variation of the C functions
+            double ScaleVariation(int,int,double,double);
+
+            // sqlite3 Database information for loading and storing the grids from run to run
+            //sqlite3 *db;
+    };
+
+    bool CheckGrid(IO::Settings*,Conv);
+}
+
+#endif

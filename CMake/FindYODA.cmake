@@ -1,0 +1,44 @@
+# Try to find YODA
+# Defines:
+#  YODA_FOUND
+#  YODA_INCLUDE_DIR
+#  YODA_INCLUDE_DIRS (not cached)
+#  YODA_LIBRARY
+#  YODA_LIBRARIES (not cached)
+#  YODA_LIBRARY_DIRS (not cached)
+
+find_library(YODA_LIBRARY NAMES YODA
+             HINTS $ENV{YODA_ROOT_DIR}/lib ${YODA_ROOT_DIR}/lib)
+
+if(${YODA_LIBRARY} MATCHES "YODA_LIBRARY-NOTFOUND")
+    FIND_PROGRAM(YODA_CONFIG_EXECUTABLE NAMES yoda-config
+        HINTS $ENV{YODA_ROOT_DIR}/bin ${YODA_ROOT_DIR}/bin)
+    IF(${YODA_CONFIG_EXECUTABLE} MATCHES "YODA_CONFIG_EXECUTABLE-NOTFOUND")
+        MESSAGE(STATUS "Looking for YODA... yoda-config executable not found")
+    ELSE(${YODA_CONFIG_EXECUTABLE} MATCHES "YODA_CONFIG_EXECUTABLE-NOTFOUND")
+        MESSAGE(STATUS "Looking for YODA... using yoda-config executable")
+        EXEC_PROGRAM(${YODA_CONFIG_EXECUTABLE} ARGS "--prefix" OUTPUT_VARIABLE YODA_PREFIX)
+        find_library(YODA_LIBRARY NAMES YODA PATHS ${YODA_PREFIX}/lib)
+    ENDIF(${YODA_CONFIG_EXECUTABLE} MATCHES "YODA_CONFIG_EXECUTABLE-NOTFOUND")
+endif()
+
+find_path(YODA_INCLUDE_DIR YODA/YODA.h
+    HINTS $ENV{YODA_ROOT_DIR}/include ${YODA_ROOT_DIR}/include ${YODA_PREFIX}/include)
+
+mark_as_advanced(YODA_LIBRARY YODA_INCLUDE_DIR)
+
+# handle the QUIETLY and REQUIRED arguments and set YODA_FOUND to TRUE if
+# all listed variables are TRUE
+include(FindPackageHandleStandardArgs)
+FIND_PACKAGE_HANDLE_STANDARD_ARGS(YODA DEFAULT_MSG YODA_INCLUDE_DIR YODA_LIBRARY)
+
+set(YODA_LIBRARIES ${YODA_LIBRARY})
+get_filename_component(YODA_LIBRARY_DIRS ${YODA_LIBRARY} PATH)
+
+set(YODA_INCLUDE_DIRS ${YODA_INCLUDE_DIR})
+
+mark_as_advanced(YODA_FOUND)
+
+set(YODA_PYTHON_PATH ${YODA_HOME}/lib/python${Python_config_version_twodigit}/site-packages)
+set(YODA_BINARY_PATH ${YODA_HOME}/bin)
+
